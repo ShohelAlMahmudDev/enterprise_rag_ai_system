@@ -1,157 +1,5 @@
-
-# from app.services.comparison_service import ComparisonService
-# from app.services.llm_service import LocalLLM
-# from app.services.memory_service import MemoryService
-# from app.services.retrieval_service import RetrievalService
-
-# try:
-#     from app.services.vision_service import VisionService
-# except Exception:
-#     VisionService = None
-
-
-# class AgentService:
-#     def __init__(self) -> None:
-#         self.retrieval = RetrievalService()
-#         self.compare = ComparisonService()
-#         self.memory = MemoryService()
-#         self.llm = LocalLLM()
-
-#         try:
-#             self.vision = VisionService() if VisionService is not None else None
-#         except Exception:
-#             self.vision = None
-
-#     def answer(self, question: str, session_id: str | None = None, debug: bool = False) -> dict:
-#         tool = self._choose_tool(question)
-#         history = self.memory.get_recent_messages(session_id) if session_id else []
-
-#         effective_question = self._build_effective_question(question, history)
-
-#         if tool == "compare":
-#             results = self.compare.run(effective_question)
-#         elif tool == "vision" and self.vision is not None:
-#             results = self.vision.search_related(effective_question)
-#         else:
-#             results = self.retrieval.search(effective_question)
-
-#         answer, llm_context_preview = self._generate_with_context(results, effective_question)
-
-#         if session_id:
-#             self.memory.add_message(session_id, "user", question)
-#             self.memory.add_message(session_id, "assistant", answer)
-#             self.memory.trim_session(session_id, keep_last=20)
-
-#         response = {
-#             "answer": answer,
-#             "tool_used": tool,
-#             "sources": self._build_sources(results),
-#             "confidence": self._estimate_confidence(results),
-#         }
-
-#         if debug:
-#             response["debug"] = {
-#                 "retrieved_chunks": [
-#                     {
-#                         "filename": item.get("filename"),
-#                         "logical_name": item.get("logical_name"),
-#                         "chunk_id": item.get("chunk_id"),
-#                         "score": round(float(item.get("final_score", item.get("score", 0.0)) or 0.0), 3),
-#                         "preview": ((item.get("text") or item.get("chunk") or "").strip())[:240],
-#                     }
-#                     for item in results
-#                 ],
-#                 "top_k": len(results),
-#                 "llm_context_preview": llm_context_preview[:1200] if llm_context_preview else "",
-#             }
-
-#         return response
-
-#     def _generate_with_context(self, results: list[dict], question: str) -> tuple[str, str]:
-#         context_blocks: list[str] = []
-
-#         for idx, item in enumerate(results, start=1):
-#             content = (item.get("text") or item.get("chunk") or "").strip()
-#             if not content:
-#                 continue
-
-#             logical_name = item.get("logical_name", "Document")
-#             filename = item.get("filename", "Unknown")
-#             chunk_id = item.get("chunk_id", idx)
-
-#             block = f"""Source {idx}
-# Document: {logical_name}
-# File: {filename}
-# Chunk: {chunk_id}
-
-# Content:
-# {content}
-# """
-#             context_blocks.append(block)
-
-#         context_text = "\n\n".join(context_blocks)
-#         answer = self.llm.generate(results, question)
-#         return answer, context_text
-
-#     def _choose_tool(self, question: str) -> str:
-#         q = question.lower()
-
-#         if any(x in q for x in ["compare", "difference", "changed between"]):
-#             return "compare"
-
-#         if any(x in q for x in ["diagram", "flow chart", "state machine", "picture", "image", "screenshot"]):
-#             return "vision"
-
-#         return "retrieval"
-
-#     def _build_effective_question(self, question: str, history: list[dict]) -> str:
-#         if not history:
-#             return question
-
-#         history_lines: list[str] = []
-#         for msg in history[-4:]:
-#             role = msg.get("role", "unknown")
-#             content = (msg.get("content") or "").strip()
-#             if content:
-#                 history_lines.append(f"{role}: {content}")
-
-#         if not history_lines:
-#             return question
-
-#         return (
-#             "Previous conversation:\n"
-#             + "\n".join(history_lines)
-#             + f"\n\nCurrent user question: {question}"
-#         )
-
-#     def _build_sources(self, results: list[dict]) -> list[str]:
-#         sources: list[str] = []
-#         for item in results:
-#             source = (
-#                 f"{item.get('logical_name', 'Unknown')} / "
-#                 f"{item.get('filename', 'Unknown')} "
-#                 f"(chunk {item.get('chunk_id', '-')})"
-#             )
-#             if source not in sources:
-#                 sources.append(source)
-#         return sources
-
-#     def _estimate_confidence(self, results: list[dict]) -> float:
-#         if not results:
-#             return 0.0
-
-#         scores: list[float] = []
-#         for item in results[:3]:
-#             score = float(item.get("final_score", item.get("score", 0.0)) or 0.0)
-#             scores.append(score)
-
-#         if not scores:
-#             return 0.0
-
-#         confidence = sum(scores) / len(scores)
-#         return round(max(0.0, min(confidence, 1.0)), 3)
-
 import logging
+from typing import Any
 
 from app.services.comparison_service import ComparisonService
 from app.services.llm_service import LocalLLM
@@ -168,11 +16,29 @@ except Exception as exc:
 
 
 class AgentService:
-    def __init__(self) -> None:
-        self.retrieval = RetrievalService()
-        self.compare = ComparisonService()
-        self.memory = MemoryService()
-        self.llm = LocalLLM()
+    """
+    Main orchestration service for answer generation.
+
+    Responsibilities:
+    - choose the appropriate retrieval/tool strategy
+    - incorporate recent conversation context
+    - retrieve relevant chunks
+    - call the LLM with grounded context
+    - return answer, structured sources, confidence, and optional debug data
+    """
+
+    def __init__(
+        self,
+        *,
+        retrieval: RetrievalService | None = None,
+        compare: ComparisonService | None = None,
+        memory: MemoryService | None = None,
+        llm: LocalLLM | None = None,
+    ) -> None:
+        self.retrieval = retrieval or RetrievalService()
+        self.compare = compare or ComparisonService()
+        self.memory = memory or MemoryService()
+        self.llm = llm or LocalLLM()
 
         try:
             self.vision = VisionService() if VisionService is not None else None
@@ -185,28 +51,51 @@ class AgentService:
         question: str,
         session_id: str | None = None,
         debug: bool = False,
-    ) -> dict:
-        tool = self._choose_tool(question)
+        filters: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        cleaned_question = (question or "").strip()
+        if not cleaned_question:
+            return self._empty_answer(debug=debug)
+
+        tool = self._choose_tool(cleaned_question)
 
         try:
             history = self.memory.get_recent_messages(session_id) if session_id else []
 
-            retrieval_query = self._build_retrieval_query(question, history)
-            generation_question = self._build_generation_question(question, history)
+            retrieval_query = self._build_retrieval_query(cleaned_question, history)
+            generation_question = self._build_generation_question(cleaned_question, history)
 
-            if tool == "compare":
-                results = self.compare.run(retrieval_query)
-            elif tool == "vision" and self.vision is not None:
-                results = self.vision.search_related(retrieval_query)
-            else:
-                results = self.retrieval.search(retrieval_query)
+            results = self._run_tool(
+                tool=tool,
+                retrieval_query=retrieval_query,
+                filters=filters,
+            )
+
+            if not results:
+                answer = self._build_no_evidence_answer(cleaned_question)
+                response = {
+                    "answer": answer,
+                    "tool_used": tool,
+                    "sources": [],
+                    "confidence": 0.0,
+                }
+
+                if session_id:
+                    self._store_session_messages(session_id, cleaned_question, answer)
+
+                if debug:
+                    response["debug"] = {
+                        "retrieved_chunks": [],
+                        "top_k": 0,
+                        "llm_context_preview": "",
+                    }
+
+                return response
 
             answer, llm_context_preview = self._generate_with_context(results, generation_question)
 
             if session_id:
-                self.memory.add_message(session_id, "user", question)
-                self.memory.add_message(session_id, "assistant", answer)
-                self.memory.trim_session(session_id, keep_last=20)
+                self._store_session_messages(session_id, cleaned_question, answer)
 
             response = {
                 "answer": answer,
@@ -238,7 +127,32 @@ class AgentService:
                 } if debug else None,
             }
 
-    def _generate_with_context(self, results: list[dict], question: str) -> tuple[str, str]:
+    def _run_tool(
+        self,
+        *,
+        tool: str,
+        retrieval_query: str,
+        filters: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        if tool == "compare":
+            return self.compare.run(retrieval_query)
+
+        if tool == "vision":
+            return self._run_retrieval(retrieval_query, filters=filters)
+
+        return self._run_retrieval(retrieval_query, filters=filters)
+
+    def _run_retrieval(
+        self,
+        retrieval_query: str,
+        filters: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        try:
+            return self.retrieval.search(retrieval_query, filters=filters)
+        except TypeError:
+            return self.retrieval.search(retrieval_query)
+
+    def _generate_with_context(self, results: list[dict[str, Any]], question: str) -> tuple[str, str]:
         context_blocks: list[str] = []
 
         for idx, item in enumerate(results, start=1):
@@ -246,21 +160,26 @@ class AgentService:
             if not content:
                 continue
 
-            logical_name = item.get("logical_name", "Document")
-            filename = item.get("filename", "Unknown")
-            chunk_id = item.get("chunk_id", idx)
+            source_label = self._build_source_label(item=item, default_index=idx)
 
             block = (
                 f"Source {idx}\n"
-                f"Document: {logical_name}\n"
-                f"File: {filename}\n"
-                f"Chunk: {chunk_id}\n\n"
+                f"{source_label}\n\n"
                 f"Content:\n{content}"
             )
             context_blocks.append(block)
 
-        context_text = "\n\n".join(context_blocks)
-        answer = self.llm.generate(results, question)
+        context_text = "\n\n".join(context_blocks).strip()
+
+        try:
+            answer = self.llm.generate(results, question)
+        except Exception as exc:
+            logger.exception("LLM generation failed: %s", exc)
+            answer = (
+                "I found relevant information, but I could not generate a final answer "
+                "at the moment."
+            )
+
         return answer, context_text
 
     def _choose_tool(self, question: str) -> str:
@@ -271,16 +190,13 @@ class AgentService:
 
         if any(
             x in q
-            for x in ["diagram", "flow chart", "state machine", "picture", "image", "screenshot"]
+            for x in ["diagram", "flow chart", "flowchart", "state machine", "picture", "image", "screenshot"]
         ):
             return "vision"
 
         return "retrieval"
 
-    def _build_retrieval_query(self, question: str, history: list[dict]) -> str:
-        """
-        Keep retrieval query focused. Use only recent user messages if helpful.
-        """
+    def _build_retrieval_query(self, question: str, history: list[dict[str, Any]]) -> str:
         if not history:
             return question
 
@@ -293,14 +209,10 @@ class AgentService:
         if not recent_user_messages:
             return question
 
-        # Use just a light conversational hint instead of the full history transcript.
         previous_user_context = " | ".join(recent_user_messages[-2:])
         return f"Previous user context: {previous_user_context}\nCurrent question: {question}"
 
-    def _build_generation_question(self, question: str, history: list[dict]) -> str:
-        """
-        Generation can benefit from slightly richer conversation context.
-        """
+    def _build_generation_question(self, question: str, history: list[dict[str, Any]]) -> str:
         if not history:
             return question
 
@@ -320,25 +232,90 @@ class AgentService:
             + f"\n\nCurrent user question: {question}"
         )
 
-    def _build_sources(self, results: list[dict]) -> list[str]:
-        sources: list[str] = []
+    def _build_sources(self, results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        sources: list[dict[str, Any]] = []
+        seen: set[str] = set()
 
         for item in results:
-            source = (
-                f"{item.get('logical_name', 'Unknown')} / "
-                f"{item.get('filename', 'Unknown')} "
-                f"(chunk {item.get('chunk_id', '-')})"
+            source = {
+                "logical_name": item.get("logical_name"),
+                "filename": item.get("filename") or item.get("source_file"),
+                "file_type": item.get("file_type"),
+                "page": item.get("page"),
+                "page_number": item.get("page_number"),
+                "slide": item.get("slide"),
+                "slide_number": item.get("slide_number"),
+                "sheet": item.get("sheet"),
+                "sheet_name": item.get("sheet_name"),
+                "row": item.get("row"),
+                "heading": item.get("heading"),
+                "title": item.get("title"),
+                "chunk_id": item.get("chunk_id"),
+                "document_id": item.get("document_id"),
+                "version_id": item.get("version_id"),
+                "diagram_type": item.get("diagram_type"),
+                "has_structured_extraction": item.get("has_structured_extraction"),
+                "source_modality": item.get("source_modality"),
+                "content_type": item.get("content_type"),
+                "score": item.get("score"),
+                "final_score": item.get("final_score"),
+            }
+
+            dedupe_key = (
+                f"{source.get('filename')}|"
+                f"{source.get('page') or source.get('page_number')}|"
+                f"{source.get('slide') or source.get('slide_number')}|"
+                f"{source.get('sheet') or source.get('sheet_name')}|"
+                f"{source.get('row')}|"
+                f"{source.get('chunk_id')}"
             )
-            if source not in sources:
-                sources.append(source)
+
+            if dedupe_key in seen:
+                continue
+
+            seen.add(dedupe_key)
+            sources.append(source)
 
         return sources
 
-    def _build_debug_payload(self, results: list[dict], llm_context_preview: str) -> dict:
+    def _build_source_label(self, *, item: dict[str, Any], default_index: int) -> str:
+        logical_name = item.get("logical_name") or "Unknown"
+        filename = item.get("filename") or item.get("source_file") or "Unknown"
+
+        location_parts: list[str] = []
+
+        if item.get("page") is not None:
+            location_parts.append(f"page {item['page']}")
+        elif item.get("page_number") is not None:
+            location_parts.append(f"page {item['page_number']}")
+
+        if item.get("slide") is not None:
+            location_parts.append(f"slide {item['slide']}")
+        elif item.get("slide_number") is not None:
+            location_parts.append(f"slide {item['slide_number']}")
+
+        if item.get("sheet"):
+            location_parts.append(f"sheet {item['sheet']}")
+        elif item.get("sheet_name"):
+            location_parts.append(f"sheet {item['sheet_name']}")
+
+        if item.get("row") is not None:
+            location_parts.append(f"row {item['row']}")
+
+        chunk_id = item.get("chunk_id")
+        if chunk_id is not None:
+            location_parts.append(f"chunk {chunk_id}")
+        else:
+            location_parts.append(f"chunk {default_index}")
+
+        location_text = ", ".join(location_parts)
+        return f"{logical_name} / {filename} ({location_text})"
+
+    def _build_debug_payload(self, results: list[dict[str, Any]], llm_context_preview: str) -> dict[str, Any]:
         return {
             "retrieved_chunks": [
                 {
-                    "filename": item.get("filename"),
+                    "filename": item.get("filename") or item.get("source_file"),
                     "logical_name": item.get("logical_name"),
                     "chunk_id": item.get("chunk_id"),
                     "score": round(
@@ -353,13 +330,16 @@ class AgentService:
             "llm_context_preview": llm_context_preview[:1200] if llm_context_preview else "",
         }
 
-    def _estimate_confidence(self, results: list[dict]) -> float:
+    def _estimate_confidence(self, results: list[dict[str, Any]]) -> float:
         if not results:
             return 0.0
 
         scores: list[float] = []
         for item in results[:3]:
-            score = float(item.get("final_score", item.get("score", 0.0)) or 0.0)
+            try:
+                score = float(item.get("final_score", item.get("score", 0.0)) or 0.0)
+            except Exception:
+                score = 0.0
             scores.append(score)
 
         if not scores:
@@ -367,3 +347,30 @@ class AgentService:
 
         confidence = sum(scores) / len(scores)
         return round(max(0.0, min(confidence, 1.0)), 3)
+
+    def _build_no_evidence_answer(self, question: str) -> str:
+        return (
+            "I could not find enough relevant information in the indexed documents "
+            "to answer that question reliably."
+        )
+
+    def _store_session_messages(self, session_id: str, user_question: str, assistant_answer: str) -> None:
+        try:
+            self.memory.add_message(session_id, "user", user_question)
+            self.memory.add_message(session_id, "assistant", assistant_answer)
+            self.memory.trim_session(session_id, keep_last=20)
+        except Exception as exc:
+            logger.warning("Failed to store session memory for %s: %s", session_id, exc)
+
+    def _empty_answer(self, *, debug: bool) -> dict[str, Any]:
+        return {
+            "answer": "Please provide a non-empty question.",
+            "tool_used": None,
+            "sources": [],
+            "confidence": 0.0,
+            "debug": {
+                "retrieved_chunks": [],
+                "top_k": 0,
+                "llm_context_preview": "",
+            } if debug else None,
+        }

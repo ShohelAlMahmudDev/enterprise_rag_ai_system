@@ -1,4 +1,3 @@
-
 import logging
 from functools import lru_cache
 
@@ -61,12 +60,35 @@ def get_embedding_client() -> OllamaEmbeddingClient:
 class EmbeddingService:
     def __init__(self) -> None:
         self.client = get_embedding_client()
-        self.dimension = self._detect_dimension()
+        self._dimension: int | None = None
+
+    @property
+    def dimension(self) -> int:
+        """
+        Lazily detect embedding dimension only when first needed.
+        This prevents backend startup from failing when Ollama is temporarily unavailable.
+        """
+        if self._dimension is None:
+            self._dimension = self._detect_dimension()
+        return self._dimension
 
     def _detect_dimension(self) -> int:
-        test_vector = self.client.embed(["dimension check"])[0]
+        try:
+            test_vector = self.client.embed(["dimension check"])[0]
+        except requests.RequestException as exc:
+            logger.exception("Failed to connect to Ollama while detecting embedding dimension: %s", exc)
+            raise RuntimeError(
+                "Could not connect to Ollama embedding service. "
+                "Please make sure Ollama is running and accessible at "
+                f"{settings.OLLAMA_BASE_URL}."
+            ) from exc
+        except Exception as exc:
+            logger.exception("Failed to detect embedding dimension: %s", exc)
+            raise RuntimeError("Failed to detect embedding dimension from Ollama.") from exc
+
         if not test_vector:
             raise ValueError("Failed to detect embedding dimension from Ollama.")
+
         return len(test_vector)
 
     def detect_language(self, text: str) -> str:
