@@ -36,10 +36,10 @@ class Settings(BaseSettings):
 
     ENABLE_MULTIMODAL_INGESTION: bool = True
 
-    TOP_K: int = 5
-    MAX_FILE_SIZE_MB: int = 25
-    DEFAULT_CHUNK_SIZE: int = 900
-    DEFAULT_CHUNK_OVERLAP: int = 150
+    TOP_K: int = 8
+    DEFAULT_CHUNK_SIZE: int = 450
+    DEFAULT_CHUNK_OVERLAP: int = 60 
+    MAX_FILE_SIZE_MB: int = 25 
     ENABLE_GENERATIVE_SUMMARY: bool = True
 
     OCR_ENABLED: bool = True
