@@ -151,6 +151,7 @@ class RetrievalService:
             enriched["multimodal_boost"] = multimodal_boost
             enriched["final_score"] = round(final_score, 6)
             enriched["numeric_boost"] = numeric_boost
+            enriched["mapping_boost"] = mapping_boost
 
             scored_items.append(enriched)
 
@@ -408,7 +409,7 @@ def _mapping_pattern_boost(question: str, text: str) -> float:
 
     boost = 0.0
     for num in q_numbers:
-        pattern = rf"\b{num}\s*="
+        pattern = rf"\b{re.escape(num)}\s*=\s*"
         if re.search(pattern, text):
             boost += 1.0
 
