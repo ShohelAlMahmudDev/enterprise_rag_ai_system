@@ -49,6 +49,30 @@ class Settings(BaseSettings):
     OCR_DPI: int = 250
     PDF_OCR_MIN_TEXT_LENGTH: int = 40
 
+
+    BM25_INDEX_PATH: str = "./data/bm25_index.json"
+    STRUCTURED_INDEX_PATH: str = "./data/structured_index.json"
+
+    RETRIEVAL_CANDIDATE_MULTIPLIER: int = 5
+    BM25_TOP_K: int = 20
+    STRUCTURED_TOP_K: int = 20
+
+    ENABLE_BM25_RETRIEVAL: bool = True
+    ENABLE_STRUCTURED_RETRIEVAL: bool = True
+    ENABLE_QUERY_REWRITE: bool = True
+
+    BM25_WEIGHT: float = 0.20
+    VECTOR_WEIGHT: float = 0.30
+    KEYWORD_WEIGHT: float = 0.12
+    PHRASE_WEIGHT: float = 0.08
+    METADATA_WEIGHT: float = 0.07
+    STRUCTURE_WEIGHT: float = 0.05
+    MULTIMODAL_WEIGHT: float = 0.03
+    NUMERIC_WEIGHT: float = 0.10
+    MAPPING_WEIGHT: float = 0.10
+    COLUMN_WEIGHT: float = 0.10
+    STRUCTURED_WEIGHT: float = 0.15
+
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod
     def split_origins(cls, value):
@@ -90,7 +114,20 @@ class Settings(BaseSettings):
         if value < 0:
             raise ValueError("PDF_OCR_MIN_TEXT_LENGTH cannot be negative")
         return value
+    
+    @field_validator("RETRIEVAL_CANDIDATE_MULTIPLIER")
+    @classmethod
+    def validate_retrieval_candidate_multiplier(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("RETRIEVAL_CANDIDATE_MULTIPLIER must be greater than 0")
+        return value
 
+    @field_validator("BM25_TOP_K", "STRUCTURED_TOP_K")
+    @classmethod
+    def validate_top_k_like(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("BM25_TOP_K and STRUCTURED_TOP_K must be greater than 0")
+        return value
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

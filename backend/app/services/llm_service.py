@@ -1,4 +1,5 @@
 import logging
+import re
 import textwrap
 from typing import Any
 
@@ -46,6 +47,7 @@ class LocalLLM:
             )
 
         format_hint = self._build_format_hint(question)
+        question_guidance = self._build_question_guidance(question)
 
         system_prompt = textwrap.dedent(
             """\
@@ -55,11 +57,16 @@ class LocalLLM:
             - Answer using only the provided context.
             - Start with a direct answer.
             - Keep the answer concise, clear, and professional.
-            - Use short paragraphs.
-            - Use numbered steps for procedures.
-            - Use bullets only when they genuinely improve clarity.
+            - Keep wording concrete and precise.
+            - For technical tables, codes, values, fields, datatypes, rows, and mappings:
+              - prefer exact matches over general similarity
+              - use the exact number, key, field name, or mapped value from the context
+              - do not guess nearby values
+              - do not merge multiple mappings unless the context clearly does so
+            - If a structured entry directly answers the question, prefer it over general prose.
+            - If multiple candidate values appear, choose only the one best supported by the context.
+            - If the context is incomplete or conflicting, say so clearly and briefly.
             - Do not invent facts that are not supported by the context.
-            - If the context is incomplete or insufficient, say so briefly and clearly.
             - Do not mention internal retrieval details such as:
               - "Source 1"
               - "according to the context"
@@ -80,6 +87,9 @@ class LocalLLM:
 
             Question:
             {question}
+
+            Special guidance:
+            {question_guidance}
 
             Formatting instructions:
             - Give a short direct answer first.
@@ -108,8 +118,8 @@ class LocalLLM:
                     ],
                     "stream": False,
                     "options": {
-                        "temperature": 0.2,
-                        "num_predict": 500,
+                        "temperature": 0.1,
+                        "num_predict": 450,
                     },
                 },
                 timeout=self.timeout,
@@ -133,9 +143,12 @@ class LocalLLM:
 
     def _build_context_text(self, context_items: list[dict[str, Any]]) -> str:
         """
-        Build compact, citation-friendly context blocks for the LLM.
+        Build compact structured context blocks for the LLM.
+        Keep whole blocks intact instead of cutting raw text mid-block.
         """
         context_blocks: list[str] = []
+        max_total_chars = 7000
+        current_total = 0
 
         for idx, item in enumerate(context_items, start=1):
             content = (item.get("text") or item.get("chunk") or "").strip()
@@ -145,28 +158,55 @@ class LocalLLM:
             logical_name = item.get("logical_name") or "Document"
             filename = item.get("filename") or item.get("source_file") or "Unknown"
             location = self._build_location_hint(item=item, default_index=idx)
+            section_type = item.get("type") or item.get("record_type") or "unknown"
+            heading = item.get("heading") or item.get("title") or ""
+            is_structured = bool(item.get("is_structured")) or bool(item.get("structured_score"))
+            attribute_name = item.get("attribute_name")
+            code = item.get("code")
+            value = item.get("value")
+            columns = item.get("columns") or {}
+
+            metadata_lines = [
+                f"Document: {logical_name}",
+                f"File: {filename}",
+                f"Location: {location}",
+                f"Section type: {section_type}",
+            ]
+
+            if heading:
+                metadata_lines.append(f"Heading: {heading}")
+            if is_structured:
+                metadata_lines.append("Structured content: yes")
+            if attribute_name:
+                metadata_lines.append(f"Field: {attribute_name}")
+            if code:
+                metadata_lines.append(f"Code: {code}")
+            if value:
+                metadata_lines.append(f"Value: {value}")
+
+            if columns:
+                metadata_lines.append("Columns:")
+                for key, val in list(columns.items())[:8]:
+                    metadata_lines.append(f"- {key}: {val}")
 
             block = textwrap.dedent(
                 f"""\
-                Source {idx}
-                Document: {logical_name}
-                File: {filename}
-                Location: {location}
+                Item {idx}
+                {"\n".join(metadata_lines)}
 
                 Content:
                 {content}
                 """
             ).strip()
 
+            projected_total = current_total + len(block) + 2
+            if projected_total > max_total_chars:
+                break
+
             context_blocks.append(block)
+            current_total = projected_total
 
-        if not context_blocks:
-            return ""
-
-        context_text = "\n\n".join(context_blocks)
-
-        # Keep context bounded for local model reliability.
-        return context_text[:7000].strip()
+        return "\n\n".join(context_blocks).strip()
 
     def _deduplicate_context_items(self, context_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """
@@ -188,7 +228,8 @@ class LocalLLM:
 
             filename = str(item.get("filename") or item.get("source_file") or "")
             chunk_id = str(item.get("chunk_id") or "")
-            key = f"{filename}|{chunk_id}|{content[:220]}"
+            code = str(item.get("code") or "")
+            key = f"{filename}|{chunk_id}|{code}|{content[:220]}"
 
             if key in seen:
                 continue
@@ -196,7 +237,7 @@ class LocalLLM:
             seen.add(key)
             unique_items.append(item)
 
-            if len(unique_items) >= 5:
+            if len(unique_items) >= 6:
                 break
 
         return unique_items
@@ -226,6 +267,51 @@ class LocalLLM:
 
         return ", ".join(parts)
 
+    def _build_question_guidance(self, question: str) -> str:
+        q = question.lower()
+
+        if self._is_exact_lookup_question(q):
+            return (
+                "This looks like an exact lookup question. "
+                "Match exact numbers, field names, datatypes, row values, and key-value mappings carefully. "
+                "If the question asks for a specific code or value, answer with that exact mapped meaning only."
+            )
+
+        if any(word in q for word in ["type", "datatype", "data type"]):
+            return (
+                "Focus on the datatype or declared field type. "
+                "Do not describe general behavior unless the context explicitly includes it."
+            )
+
+        if any(word in q for word in ["action", "status", "code", "value", "field"]):
+            return (
+                "Focus on the exact field or mapping requested. "
+                "Prefer the most explicit row, entry, or mapping from the context."
+            )
+
+        return (
+            "Answer from the most directly relevant retrieved entries. "
+            "Prefer explicit statements over general summaries."
+        )
+
+    def _is_exact_lookup_question(self, question: str) -> bool:
+        if any(char.isdigit() for char in question):
+            return True
+
+        patterns = [
+            r"\baction\b",
+            r"\bstatus\b",
+            r"\bmessagehandle\b",
+            r"\bdatatype\b",
+            r"\bdata type\b",
+            r"\btype of\b",
+            r"\bvalue\b",
+            r"\bcode\b",
+            r"\bfield\b",
+        ]
+
+        return any(re.search(pattern, question) for pattern in patterns)
+
     def _build_format_hint(self, question: str) -> str:
         q = question.lower()
 
@@ -245,6 +331,17 @@ class LocalLLM:
             word in q
             for word in ["diagram", "flowchart", "flow chart", "state machine", "sequence", "architecture", "network"]
         )
+        is_lookup_question = self._is_exact_lookup_question(q)
+
+        if is_lookup_question:
+            return textwrap.dedent(
+                """\
+                Preferred format:
+                - One short direct answer first
+                - Then one short clarification sentence only if needed
+                - If a datatype, code, or mapped value exists, state it exactly
+                """
+            ).strip()
 
         if is_step_question:
             return textwrap.dedent(
@@ -300,24 +397,18 @@ class LocalLLM:
         """
         cleaned = text.strip()
 
-        replacements = [
-            ("According to the context,", ""),
-            ("According to the provided context,", ""),
-            ("Based on the context,", ""),
-            ("The documents provide", "Here’s what I found"),
-            ("This is implied", ""),
-            ("Source 1", ""),
-            ("Source 2", ""),
-            ("Source 3", ""),
-            ("Source 4", ""),
-            ("Source 5", ""),
+        leading_patterns = [
+            r"^\s*According to the context,?\s*",
+            r"^\s*According to the provided context,?\s*",
+            r"^\s*Based on the context,?\s*",
+            r"^\s*Based on the provided context,?\s*",
         ]
 
-        for old, new in replacements:
-            cleaned = cleaned.replace(old, new)
+        for pattern in leading_patterns:
+            cleaned = re.sub(pattern, "", cleaned, flags=re.IGNORECASE)
 
-        while "\n\n\n" in cleaned:
-            cleaned = cleaned.replace("\n\n\n", "\n\n")
+        cleaned = re.sub(r"\bSource\s+[1-9]\b", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
 
         return cleaned.strip()
 
@@ -325,6 +416,27 @@ class LocalLLM:
         """
         Build a deterministic answer when the LLM call fails.
         """
+        if self._is_exact_lookup_question(question.lower()):
+            best = context_items[0] if context_items else None
+            if best:
+                value = (best.get("value") or "").strip()
+                attribute_name = (best.get("attribute_name") or "").strip()
+                code = str(best.get("code") or "").strip()
+                if value and (attribute_name or code):
+                    parts: list[str] = []
+                    if attribute_name:
+                        parts.append(attribute_name)
+                    if code:
+                        parts.append(code)
+                    label = " ".join(parts).strip()
+                    if label:
+                        return f"{label}: {value}"
+                    return value
+
+                content = (best.get("text") or best.get("chunk") or "").strip()
+                if content:
+                    return content[:500].strip()
+
         snippets: list[str] = []
 
         for item in context_items[:2]:
