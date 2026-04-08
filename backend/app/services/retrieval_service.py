@@ -128,14 +128,18 @@ class RetrievalService:
             metadata_boost = _metadata_boost(question_terms, item)
             structure_boost = _structure_boost(question_terms, item)
             multimodal_boost = _multimodal_boost(question_terms, item)
+            numeric_boost = _numeric_exact_match_boost(question, text)
+            mapping_boost = _mapping_pattern_boost(question, text)
 
             final_score = (
-                0.46 * raw_vector_score
-                + 0.20 * keyword_score
+                0.38 * raw_vector_score
+                + 0.18 * keyword_score
                 + 0.10 * phrase_boost
-                + 0.10 * metadata_boost
-                + 0.08 * structure_boost
-                + 0.06 * multimodal_boost
+                + 0.08 * metadata_boost
+                + 0.06 * structure_boost
+                + 0.05 * multimodal_boost
+                + 0.15 * numeric_boost
+                + 0.12 * mapping_boost
             )
 
             enriched = dict(item)
@@ -146,6 +150,7 @@ class RetrievalService:
             enriched["structure_boost"] = structure_boost
             enriched["multimodal_boost"] = multimodal_boost
             enriched["final_score"] = round(final_score, 6)
+            enriched["numeric_boost"] = numeric_boost
 
             scored_items.append(enriched)
 
@@ -372,3 +377,39 @@ def _normalize_vector_score(item: dict[str, Any]) -> float:
         return 1.0 / (1.0 + max(distance, 0.0))
 
     return 0.0
+
+def _numeric_exact_match_boost(question: str, text: str) -> float:
+    """
+    Strong boost when exact numeric values match.
+    Critical for table lookups like 'action 26'.
+    """
+    if not question or not text:
+        return 0.0
+
+    q_numbers = re.findall(r"\b\d+\b", question)
+    if not q_numbers:
+        return 0.0
+
+    text_numbers = set(re.findall(r"\b\d+\b", text))
+    if not text_numbers:
+        return 0.0
+
+    matches = sum(1 for num in q_numbers if num in text_numbers)
+
+    if matches == 0:
+        return 0.0
+
+    return min(matches / len(q_numbers), 1.0)
+
+def _mapping_pattern_boost(question: str, text: str) -> float:
+    q_numbers = re.findall(r"\b\d+\b", question)
+    if not q_numbers:
+        return 0.0
+
+    boost = 0.0
+    for num in q_numbers:
+        pattern = rf"\b{num}\s*="
+        if re.search(pattern, text):
+            boost += 1.0
+
+    return min(boost / len(q_numbers), 1.0)
